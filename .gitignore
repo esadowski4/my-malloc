@@ -1,0 +1,125 @@
+# Compiled Object files
+*.o
+*.obj
+
+# Static Libraries
+*.a
+*.lib
+
+# Shared Libraries
+*.so
+*.dylib
+*.dll
+
+# Executables
+*.exe
+*.out
+*.app
+test*
+!test*.c
+!test*.h
+
+# Debug Information
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Profiling Data
+gmon.out
+*.gcno
+*.gcda
+*.gcov
+
+# Core dumps
+core
+core.*
+
+# Temporary files
+*~
+.*~
+*.tmp
+*.temp
+
+# Editor files
+.vscode/
+.vs/
+*.swp
+*.swo
+*#
+.#*
+
+# IDE files
+*.cbp
+*.layout
+*.depend
+*.workspace
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Build directories
+build/
+dist/
+bin/
+
+# CMake files (if used)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.cmake
+
+# Autotools files (if used)
+aclocal.m4
+autom4te.cache/
+config.h
+config.h.in
+config.log
+config.status
+configure
+Makefile.in
+
+# Documentation build
+docs/_build/
+*.pdf
+*.aux
+*.log
+*.toc
+
+# Compression formats
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Local configuration
+local.mk
+.local
+
+# Address Sanitizer
+*.asan
+
+# Valgrind
+*.valgrind
+vgcore.*
+
+# Performance analysis
+*.perf
+callgrind.out.*
+
+# Custom test outputs
+test_results/
+*.test
