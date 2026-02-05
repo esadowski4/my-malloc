@@ -187,23 +187,78 @@ static header * allocate_chunk(size_t size) {
  */
 static inline header * allocate_object(size_t raw_size) {
   // TODO implement allocation
-  if (!raw_size) return NULL; // Return nullptr for allocation of 0 bytes
-  size_t new_size = ALLOC_HEADER_SIZE + raw_size;
-  new_size = ((new_size + 8 - 1) / 8) * 8; // Round size to next multiple of 8 bytes
+  if (raw_size == 0) {
+    return NULL; // Return nullptr for inserviceable allocation
+  }
 
-  size_t min_size = sizeof(header);
+  size_t rounded_size = ((raw_size + 7) / 8) * 8; // Round size to next multiple of 8 bytes (if needed)
+  size_t new_size = ALLOC_HEADER_SIZE + rounded_size;
 
   // Ensure the size requested is at least the minimum size allowed
-  if (min_size > new_size) {
-    new_size = min_size;
+  if (sizeof(header) > new_size) {
+    new_size = sizeof(header);
+  }
+  // Optimization
+  int listNum = (rounded_size / 8) - 1;
+  if (listNum >= N_LISTS) {
+    listNum = N_LISTS - 1;
   }
 
-  for (int i = 0; i <= N_LISTS; i++) {
+  // Iterate through N_LISTS
+  for (int i = listNum; i < N_LISTS; i++) {
+    header *sentinel = &freelistSentinels[i];
+    header *curr = sentinel->next; // if this is equal to the sentinel, the freelist is empty
 
-  }
-  (void) raw_size;
-  assert(false);
-  exit(1);
+    if (curr == sentinel) continue; // list is empty
+
+    while (curr != sentinel) { // if the current list doesn't have any free blocks, go to the next sentinel
+      if (get_size(curr) >= new_size) { // can the current block be used to fullfil the user's request?
+
+        // implement remainder/splitting logic
+        size_t remainder_size = get_size(curr) - new_size;
+        header *allocated_block; // what we return to the user
+
+        if (remainder_size < sizeof(header)) { // no split
+          curr->next->prev = curr->prev;
+          curr->prev->next = curr->next;
+          allocated_block = curr; // give user whole block
+          set_state(allocated_block, ALLOCATED);
+        }
+        else { // we have to split
+          // curr becomes the "remainder" and stays in the free list
+          set_size(curr, remainder_size);
+
+          // set metadata for rightmost block
+          allocated_block = get_header_from_offset(curr, remainder_size); // basically uses the remainder size as an offset from the start of the block
+          set_size_and_state(allocated_block, new_size, ALLOCATED); // curr stays unallocated
+          allocated_block->left_size = remainder_size;
+        }
+        // also update the next block to have the updated size of the block to its left
+        get_right_header(allocated_block)->left_size = get_size(allocated_block);
+
+        return (void*)((char*)allocated_block + ALLOC_HEADER_SIZE); // need to return the data portion
+      }
+      // go to next free block in freelist if this block doesn't have enough space
+      curr = curr->next;
+    }
+  } // if the for loop terminates here, theres not enough memory to fulfill the request, so ask for more from the OS
+  header *new_chunk = allocate_chunk(ARENA_SIZE);
+
+    if (new_chunk == NULL) { // this will execute if sbrk fails
+      errno = ENOMEM;
+      return NULL;
+    }
+
+    header *free_list = &freelistSentinels[N_LISTS - 1]; // we have to insert the new chunk into the last list bc it is very large
+
+    // insert the new chunk at the front of the list (need to still implement coaless logic)
+    new_chunk->next = free_list->next;
+    new_chunk->prev = free_list;
+    free_list->next->prev = new_chunk;
+    free_list->next = new_chunk;
+
+    // try again since there is more memory now
+    return allocate_object(raw_size);
 }
 
 /**
@@ -224,9 +279,7 @@ static inline header * ptr_to_header(void * p) {
  */
 static inline void deallocate_object(void * p) {
   // TODO implement deallocation
-  (void) p;
-  assert(false);
-  exit(1);
+  return; // placeholder
 }
 
 /**
