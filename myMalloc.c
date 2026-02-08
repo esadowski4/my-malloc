@@ -169,7 +169,6 @@ inline static void insert_fenceposts(void * raw_mem, size_t size) {
  */
 static header * allocate_chunk(size_t size) {
   void * mem = sbrk(size);
-
   insert_fenceposts(mem, size);
   header * hdr = (header *) ((char *)mem + ALLOC_HEADER_SIZE);
   set_state(hdr, UNALLOCATED);
@@ -212,11 +211,15 @@ static inline header * allocate_object(size_t raw_size) {
     if (curr == sentinel) continue; // list is empty
 
     while (curr != sentinel) { // if the current list doesn't have any free blocks, go to the next sentinel
+
+
       if (get_size(curr) >= new_size) { // can the current block be used to fullfil the user's request?
+
 
         // implement remainder/splitting logic
         size_t remainder_size = get_size(curr) - new_size;
         header *allocated_block; // what we return to the user
+
 
         if (remainder_size < sizeof(header)) { // no split
           curr->next->prev = curr->prev;
@@ -224,42 +227,118 @@ static inline header * allocate_object(size_t raw_size) {
           allocated_block = curr; // give user whole block
           set_state(allocated_block, ALLOCATED);
         }
-        else { // we have to split
-          // curr becomes the "remainder" and stays in the free list
-          set_size(curr, remainder_size);
 
-          // set metadata for rightmost block
-          allocated_block = get_header_from_offset(curr, remainder_size); // basically uses the remainder size as an offset from the start of the block
+
+        else { // we have to split
+
+
+          // curr becomes the "remainder" and stays in the free list, however, we need to change which freelist it is in
+          set_size(curr, remainder_size);
+          size_t new_index = ((remainder_size - ALLOC_HEADER_SIZE) / 8) - 1; // find new index for which freelist the smaller block should be placed
+          if (new_index >= N_LISTS) {
+            new_index = N_LISTS - 1;
+          }
+
+          if (new_index != i) {
+
+
+            // unlink curr from old list
+            curr->next->prev = curr->prev;
+            curr->prev->next = curr->next;
+
+            // add curr to beginning of new list
+            header *new_sentinel = &freelistSentinels[new_index];
+            curr->next = new_sentinel->next;
+            curr->prev = new_sentinel;
+            new_sentinel->next->prev = curr;
+            new_sentinel->next = curr;
+          }
+
+
+          // set metadata for rightmost block (the one we return to the user)
+          allocated_block = get_header_from_offset(curr, remainder_size);
           set_size_and_state(allocated_block, new_size, ALLOCATED); // curr stays unallocated
           allocated_block->left_size = remainder_size;
         }
+
+
         // also update the next block to have the updated size of the block to its left
         get_right_header(allocated_block)->left_size = get_size(allocated_block);
 
         return (void*)((char*)allocated_block + ALLOC_HEADER_SIZE); // need to return the data portion
-      }
+      } // end_if
+
       // go to next free block in freelist if this block doesn't have enough space
       curr = curr->next;
-    }
+
+    } // end_while
+
   } // if the for loop terminates here, theres not enough memory to fulfill the request, so ask for more from the OS
   header *new_chunk = allocate_chunk(ARENA_SIZE);
 
-    if (new_chunk == NULL) { // this will execute if sbrk fails
-      errno = ENOMEM;
-      return NULL;
-    }
+  if (new_chunk == (void *)-1) { // this will execute if sbrk fails
+    errno = ENOMEM;
+    return NULL;
+  }
 
-    header *free_list = &freelistSentinels[N_LISTS - 1]; // we have to insert the new chunk into the last list bc it is very large
 
-    // insert the new chunk at the front of the list (need to still implement coaless logic)
-    new_chunk->next = free_list->next;
-    new_chunk->prev = free_list;
-    free_list->next->prev = new_chunk;
-    free_list->next = new_chunk;
+  // TODO: Implement coaless logic
+  header * old_right = lastFencePost;
+  header * new_left = get_header_from_offset(new_chunk, -ALLOC_HEADER_SIZE);
+  header * new_right = get_header_from_offset(new_chunk, get_size(new_chunk));
 
-    // try again since there is more memory now
-    return allocate_object(raw_size);
-}
+  if ((char*)old_right + ALLOC_HEADER_SIZE == (char*)new_left) { // they touch
+
+    header * old_end_block = get_left_header(old_right);
+
+    if (get_state(old_end_block) == UNALLOCATED) { // extend block
+
+      // remove from free list, bc its size will change
+      old_end_block->next->prev = old_end_block->prev;
+      old_end_block->prev->next = old_end_block->next;
+
+      size_t total_size = get_size(old_end_block) + 2 * ALLOC_HEADER_SIZE + get_size(new_chunk);
+
+      // set metadata
+      set_state(old_end_block, UNALLOCATED);
+      set_size(old_end_block, total_size);
+      new_right->left_size = total_size;
+      new_chunk = old_end_block;
+
+    } // end_if
+    else { // use extra fencepost space (left block is allocated)
+      size_t total_size = 2 * ALLOC_HEADER_SIZE + get_size(new_chunk); // old right + new left + new chunk
+      set_state(old_right, UNALLOCATED);
+      set_size(old_right, total_size);
+      new_right->left_size = total_size;
+
+      new_chunk = old_right; // start the chunk at the old right fp
+
+    } // end_else
+  } // end_if
+
+  else { // chunks aren't adjacent, so treat it as its own chunk
+    insert_os_chunk(new_left);
+  } // end_else
+
+  lastFencePost = new_right; // update global var
+
+
+  size_t data_size = get_size(new_chunk) - ALLOC_HEADER_SIZE;
+  int idx = (data_size / 8) - 1;
+  if (idx >= N_LISTS) idx = N_LISTS - 1;
+
+  // insert new_chunk into free list
+  header *free_list = &freelistSentinels[idx];
+
+  new_chunk->next = free_list->next;
+  new_chunk->prev = free_list;
+  free_list->next->prev = new_chunk;
+  free_list->next = new_chunk;
+  // try again since there is more memory now
+  return allocate_object(raw_size);
+
+} /* allocate_object */
 
 /**
  * @brief Helper to get the header from a pointer allocated with malloc
@@ -279,7 +358,7 @@ static inline header * ptr_to_header(void * p) {
  */
 static inline void deallocate_object(void * p) {
   // TODO implement deallocation
-  return; // placeholder
+  return;
 }
 
 /**
@@ -678,11 +757,12 @@ void tags_print(printFormatter pf) {
     header * chunk = osChunkList[i];
     pf(chunk);
     for (chunk = get_right_header(chunk);
-         get_state(chunk) != FENCEPOST;
-         chunk = get_right_header(chunk)) {
+      get_state(chunk) != FENCEPOST;
+      chunk = get_right_header(chunk)) {
         pf(chunk);
     }
     pf(chunk);
     fflush(stdout);
   }
 }
+#include <errno.h>
