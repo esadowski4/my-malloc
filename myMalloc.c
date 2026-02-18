@@ -169,6 +169,9 @@ inline static void insert_fenceposts(void * raw_mem, size_t size) {
  */
 static header * allocate_chunk(size_t size) {
   void * mem = sbrk(size);
+  if (mem == (void *)-1) {
+    return NULL;
+  }
   insert_fenceposts(mem, size);
   header * hdr = (header *) ((char *)mem + ALLOC_HEADER_SIZE);
   set_state(hdr, UNALLOCATED);
@@ -454,74 +457,99 @@ static inline void deallocate_object(void * p) {
 
   set_state(to_free, UNALLOCATED);
 
+  bool already_in_list = false;
+  size_t old_index = 0;
+
   // Free Cases
   if ((!is_left_free) && (!is_right_free)) { // neither are unallocated
 
-    // do nothing
+    // do nothing, to_free is not in any list yet
 
   } // end_if
 
-  else { // at least one of the neighbors are unallocated
+  else if ((!is_left_free) && (is_right_free)) { // only right is unallocated
 
-    if ((!is_left_free) && (is_right_free)) { // only right is unallocated
+    // Compute old list index from right_neighbor's size before coalescing
+    size_t old_data = get_size(right_neighbor) - ALLOC_HEADER_SIZE;
+    old_index = (old_data / 8) - 1;
+    if (old_index >= N_LISTS) old_index = N_LISTS - 1;
 
-      // remove right_neighbor from free list
-      right_neighbor->next->prev = right_neighbor->prev;
-      right_neighbor->prev->next = right_neighbor->next;
+    // Replace right_neighbor with to_free in the free list (same position)
+    to_free->next = right_neighbor->next;
+    to_free->prev = right_neighbor->prev;
+    to_free->next->prev = to_free;
+    to_free->prev->next = to_free;
 
-      size_t total_size = get_size(right_neighbor) + get_size(to_free);
+    size_t total_size = get_size(to_free) + get_size(right_neighbor);
+    set_size(to_free, total_size);
 
-      // update size
-      set_size(to_free, total_size); // combine right_neighbor and to_free
+    already_in_list = true;
 
-    } // end_if
+  } // end_if
 
-    else if ((is_left_free) && (!is_right_free)) { // only left is unallocated
+  else if ((is_left_free) && (!is_right_free)) { // only left is unallocated
 
-      // remove left_neighbor from free list
-      left_neighbor->next->prev = left_neighbor->prev;
-      left_neighbor->prev->next = left_neighbor->next;
+    // Compute old list index from left_neighbor's size before coalescing
+    size_t old_data = get_size(left_neighbor) - ALLOC_HEADER_SIZE;
+    old_index = (old_data / 8) - 1;
+    if (old_index >= N_LISTS) old_index = N_LISTS - 1;
 
-      size_t total_size = get_size(left_neighbor) + get_size(to_free);
+    // left_neighbor stays in its position in the free list
+    size_t total_size = get_size(left_neighbor) + get_size(to_free);
+    set_size(left_neighbor, total_size);
 
-      // update size and left_size
-      set_size(left_neighbor, total_size);
+    to_free = left_neighbor;
+    already_in_list = true;
 
-      to_free = left_neighbor; // want to_free to start at left_neighbor's header
-    } // end_elif
+  } // end_elif
 
-    else { // both are unallocated
-      // remove both left and right neighbors from free list
-      right_neighbor->next->prev = right_neighbor->prev;
-      right_neighbor->prev->next = right_neighbor->next;
-      left_neighbor->next->prev = left_neighbor->prev;
-      left_neighbor->prev->next = left_neighbor->next;
+  else { // both are unallocated
+    // remove right_neighbor from free list
+    right_neighbor->next->prev = right_neighbor->prev;
+    right_neighbor->prev->next = right_neighbor->next;
 
-      size_t total_size = get_size(left_neighbor) + get_size(to_free) + get_size(right_neighbor);
+    // Compute old list index from left_neighbor's size before coalescing
+    size_t old_data = get_size(left_neighbor) - ALLOC_HEADER_SIZE;
+    old_index = (old_data / 8) - 1;
+    if (old_index >= N_LISTS) old_index = N_LISTS - 1;
 
-      set_size(left_neighbor, total_size);
+    // left_neighbor stays in its position in the free list
+    size_t total_size = get_size(left_neighbor) + get_size(to_free) + get_size(right_neighbor);
+    set_size(left_neighbor, total_size);
 
-      to_free = left_neighbor;
+    to_free = left_neighbor;
+    already_in_list = true;
 
-    } // end_else
   } // end_else
 
   // Update left size of the block to the right of to_free
-  get_right_header(to_free)->left_size = get_size(to_free); // uses size so updated size will always work
+  get_right_header(to_free)->left_size = get_size(to_free);
 
-
-  // Insert into new free_list (may not change free_list but do anyway)
+  // Determine new list index
   size_t new_index = ((get_size(to_free) - ALLOC_HEADER_SIZE) / 8) - 1;
   if (new_index >= N_LISTS) {
     new_index = N_LISTS - 1;
   }
 
-  // add to_free to beginning of new list
-  header *new_sentinel = &freelistSentinels[new_index];
-  to_free->next = new_sentinel->next;
-  to_free->prev = new_sentinel;
-  new_sentinel->next->prev = to_free;
-  new_sentinel->next = to_free;
+  if (!already_in_list) {
+    // No coalesce — insert at head of appropriate list
+    header *new_sentinel = &freelistSentinels[new_index];
+    to_free->next = new_sentinel->next;
+    to_free->prev = new_sentinel;
+    new_sentinel->next->prev = to_free;
+    new_sentinel->next = to_free;
+  } else if (new_index != old_index) {
+    // Coalesced but size no longer fits the old list — move to new list
+    to_free->next->prev = to_free->prev;
+    to_free->prev->next = to_free->next;
+
+    header *new_sentinel = &freelistSentinels[new_index];
+    to_free->next = new_sentinel->next;
+    to_free->prev = new_sentinel;
+    new_sentinel->next->prev = to_free;
+    new_sentinel->next = to_free;
+  }
+  // else: coalesced and still in the correct list — leave in place
 
 } // end_deallocate_object
 
